@@ -62,7 +62,8 @@ const CSS = `
   }
   button:hover { background: var(--accent-2); }
   button:disabled { opacity: .55; cursor: not-allowed; }
-  button.ghost { background: transparent; color: var(--muted); border: 1px solid var(--line); }
+  button.ghost { background: #fff; color: var(--text); border: 1px solid var(--line); }
+  button.ghost:hover { background: #f9fafb; border-color: #d1d5db; }
   button.soft { background: var(--soft); color: var(--accent); }
   button.danger { background: var(--bad-bg); color: var(--bad); }
   .msg { min-height: 18px; margin-top: 10px; font-size: 13px; }
@@ -91,10 +92,14 @@ const CSS = `
   .sync-block { margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--line); }
   .chips { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
   .chip {
-    border: 1px solid var(--line); background: #f9fafb; border-radius: 999px;
+    border: 1px solid #d1d5db; background: #fff; color: var(--text); border-radius: 999px;
     padding: 6px 12px; font-size: 13px; font-weight: 700; cursor: pointer;
   }
-  .chip.active { border-color: var(--accent); background: var(--soft); color: var(--accent); }
+  .chip:hover { border-color: var(--accent); background: #fff7ed; }
+  .chip.active {
+    border-color: var(--accent); background: var(--accent); color: #fff;
+  }
+  .chip.active:hover { background: var(--accent-2); border-color: var(--accent-2); color: #fff; }
   .keys { display: grid; gap: 10px; }
   .key {
     border: 1px solid var(--line); border-radius: 14px; padding: 14px;
@@ -147,10 +152,11 @@ const CSS = `
     overflow: hidden; background: #fff;
   }
   .lang-switch button {
-    border: 0; border-radius: 0; background: transparent; color: var(--muted);
+    border: 0; border-radius: 0; background: transparent; color: var(--text);
     padding: 6px 12px; font-size: 12px; font-weight: 800;
   }
-  .lang-switch button.active { background: var(--soft); color: var(--accent); }
+  .lang-switch button:hover { background: #f9fafb; }
+  .lang-switch button.active { background: var(--accent); color: #fff; }
   .collapse-toggle { cursor: pointer; user-select: none; }
   .collapse-toggle .chevron {
     color: var(--muted); font-size: 12px; transition: transform .18s ease; display: inline-block;
