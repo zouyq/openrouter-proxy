@@ -1,13 +1,15 @@
 import { Hono } from "hono";
 import type { Context } from "hono";
 import { ADMIN_HTML } from "./admin-ui.js";
-import { extractCost, isStreamRequest, proxyRaw } from "./openrouter-client.js";
+import {
+  ensureStreamUsageOption, extractUsage, isStreamRequest, parseSseUsage, proxyRaw,
+} from "./openrouter-client.js";
 import {
   LOAD_BALANCE_STRATEGIES, USAGE_SYNC_INTERVAL_PRESETS, addKey, addKeys, deleteKey, getPoolConfig,
   getPoolStats, hasStaleUsage, isQuotaExhaustedError, listKeys, markExhausted, pickBestKey,
-  probeDeprecatedKeys, probeExhaustedKeys, reactivateKey, recordKeyCall, recordNetworkFailure,
-  recordSuccess, resetRequestCounts, setCooldown, setPoolConfig, syncAllUsage, syncKeyUsage,
-  type KeyCallMeta, type LoadBalanceStrategy, type PoolConfig,
+  probeDeprecatedKeys, probeExhaustedKeys, reactivateKey, recordKeyCall, recordModelUsage,
+  recordNetworkFailure, recordSuccess, resetRequestCounts, setCooldown, setPoolConfig, syncAllUsage,
+  syncKeyUsage, type KeyCallMeta, type LoadBalanceStrategy, type PoolConfig,
 } from "./key-pool.js";
 
 type Env = { DB: D1Database; API_TOKEN?: string; ADMIN_KEY?: string; AUTH_KEY?: string };
@@ -28,6 +30,11 @@ function isAdminPath(path: string) {
 function meta(request: Request): Omit<KeyCallMeta, "endpoint" | "status"> {
   const cf = request.cf as { colo?: string; country?: string } | undefined;
   return { clientIp: request.headers.get("cf-connecting-ip") || "", colo: cf?.colo || "", country: cf?.country || "", userAgent: request.headers.get("user-agent") || "" };
+}
+function requestedModel(body: unknown): string {
+  if (!body || typeof body !== "object" || Array.isArray(body)) return "";
+  const model = (body as { model?: unknown }).model;
+  return typeof model === "string" ? model.trim().slice(0, 160) : "";
 }
 function retryAfter(header: string | null) {
   const seconds = Number(header);
@@ -153,7 +160,10 @@ function filterUpstreamHeaders(headers: Headers): Headers {
   const out = new Headers();
   for (const [k, v] of headers.entries()) {
     const key = k.toLowerCase();
-    if (["content-encoding", "content-length", "transfer-encoding", "connection"].includes(key)) continue;
+    // Strip hop-by-hop / length encodings so Workers can stream SSE cleanly.
+    if (["content-encoding", "content-length", "transfer-encoding", "connection", "keep-alive"].includes(key)) {
+      continue;
+    }
     out.set(k, v);
   }
   return out;
@@ -164,12 +174,20 @@ async function handleProxy(c: Context<{ Bindings: Env }>) {
   const url = new URL(request.url);
   const upstreamPath = toUpstreamPath(url.pathname, url.search);
   const hasBody = !["GET", "HEAD", "DELETE"].includes(request.method);
-  const bodyBuffer = hasBody ? await request.arrayBuffer() : null;
+  let bodyBuffer = hasBody ? await request.arrayBuffer() : null;
   let parsed: unknown = null;
   if (bodyBuffer && bodyBuffer.byteLength) {
     try { parsed = JSON.parse(new TextDecoder().decode(bodyBuffer)); } catch { /* opaque body is still forwarded */ }
   }
   const stream = isStreamRequest(parsed);
+  if (stream && parsed) {
+    const ensured = ensureStreamUsageOption(parsed);
+    if (ensured.buffer) {
+      parsed = ensured.body;
+      bodyBuffer = ensured.buffer;
+    }
+  }
+  const reqModel = requestedModel(parsed);
   const tried = new Set<string>();
   const callMeta = meta(request);
   while (true) {
@@ -209,15 +227,53 @@ async function handleProxy(c: Context<{ Bindings: Env }>) {
     }
     await recordKeyCall(c.env.DB, apiKey, { endpoint: url.pathname, status: String(upstream.status), ...callMeta });
     const headers = filterUpstreamHeaders(upstream.headers);
-    if (stream) return new Response(upstream.body, { status: upstream.status, headers });
+
+    if (stream) {
+      if (upstream.ok && upstream.body) {
+        const [clientSide, statsSide] = upstream.body.tee();
+        c.executionCtx.waitUntil((async () => {
+          try {
+            const usage = await parseSseUsage(statsSide);
+            if (usage && (usage.model || usage.totalTokens || usage.cost != null)) {
+              await recordModelUsage(c.env.DB, apiKey, {
+                model: usage.model,
+                requestedModel: reqModel,
+                promptTokens: usage.promptTokens,
+                completionTokens: usage.completionTokens,
+                totalTokens: usage.totalTokens,
+                cost: usage.cost,
+              });
+            }
+            await recordSuccess(c.env.DB, apiKey, usage?.cost ?? null);
+          } catch (e) {
+            console.error("[stream usage]", e);
+            try { await recordSuccess(c.env.DB, apiKey, null); } catch { /* ignore */ }
+          }
+        })());
+        return new Response(clientSide, { status: upstream.status, headers });
+      }
+      return new Response(upstream.body, { status: upstream.status, headers });
+    }
+
     const raw = await upstream.text();
     let data: unknown = null;
     try { data = JSON.parse(raw); } catch { /* preserve non-JSON responses */ }
+    const usage = extractUsage(data);
     // Some catalog endpoints (e.g. /models) may return 200 even with a bad key.
     // Only treat paid/completion-style successes as proof the key is healthy.
-    const cost = extractCost(data);
+    const cost = usage?.cost ?? null;
     if (upstream.ok && (cost != null || !["GET", "HEAD"].includes(request.method))) {
       await recordSuccess(c.env.DB, apiKey, cost);
+    }
+    if (upstream.ok && usage && (usage.model || usage.totalTokens || cost != null)) {
+      await recordModelUsage(c.env.DB, apiKey, {
+        model: usage.model,
+        requestedModel: reqModel,
+        promptTokens: usage.promptTokens,
+        completionTokens: usage.completionTokens,
+        totalTokens: usage.totalTokens,
+        cost,
+      });
     }
     return new Response(raw, { status: upstream.status, headers });
   }

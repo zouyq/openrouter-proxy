@@ -143,9 +143,30 @@ const CSS = `
   .chart-card {
     border: 1px solid var(--line); border-radius: 14px; padding: 12px 14px; background: #f9fafb;
   }
+  .chart-card-wide { grid-column: 1 / -1; }
   .chart-card h3 { margin: 0 0 4px; font-size: 14px; }
   .chart-card .meta { margin-bottom: 8px; }
   .chart-wrap { position: relative; height: 220px; }
+  .geo-map {
+    height: 340px; border-radius: 12px; border: 1px solid var(--line);
+    background: #e8eef5; z-index: 0;
+  }
+  .geo-map .leaflet-container { font: inherit; border-radius: 12px; }
+  .geo-legend {
+    display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px;
+    font-size: 12px; color: var(--muted);
+  }
+  .geo-legend span {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 4px 8px; border-radius: 999px; background: #fff; border: 1px solid var(--line);
+  }
+  .geo-legend i {
+    width: 8px; height: 8px; border-radius: 50%; background: var(--accent); display: inline-block;
+  }
+  .geo-empty {
+    height: 340px; display: grid; place-items: center; color: var(--muted);
+    border-radius: 12px; border: 1px dashed var(--line); background: #f3f4f6;
+  }
   .lang-bar { display: flex; justify-content: flex-end; margin-bottom: 10px; }
   .lang-switch {
     display: inline-flex; border: 1px solid var(--line); border-radius: 999px;
@@ -164,6 +185,20 @@ const CSS = `
   .collapse-toggle.open .chevron { transform: rotate(180deg); }
   .collapse-body { display: none; }
   .collapse-body.open { display: block; }
+  .tabs {
+    display: flex; gap: 4px; margin-bottom: 14px; padding: 4px;
+    border: 1px solid var(--line); border-radius: 14px; background: var(--surface);
+    box-shadow: var(--shadow);
+  }
+  .tab {
+    flex: 1; border: 0; border-radius: 10px; background: transparent;
+    color: var(--muted); padding: 10px 12px; font: inherit; font-weight: 800; cursor: pointer;
+  }
+  .tab:hover { background: #f9fafb; color: var(--text); }
+  .tab.active { background: var(--accent); color: #fff; }
+  .tab.active:hover { background: var(--accent-2); color: #fff; }
+  .tab-panel { display: none; }
+  .tab-panel.active { display: block; }
   @media (max-width: 900px) {
     .stats { grid-template-columns: repeat(2, minmax(0,1fr)); }
     .strategies { grid-template-columns: 1fr; }
@@ -171,6 +206,7 @@ const CSS = `
     .actions { justify-content: flex-start; }
     .field-grid { grid-template-columns: 1fr 1fr; }
     .charts { grid-template-columns: 1fr; }
+    .geo-map, .geo-empty { height: 280px; }
   }
 `;
 
@@ -183,7 +219,9 @@ const HTML = `<!doctype html>
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Manrope:wght@400;600;700;800&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <style>${CSS}</style>
 </head>
 <body>
@@ -219,14 +257,53 @@ const HTML = `<!doctype html>
 
     <div class="stats" id="stats"></div>
 
-    <div class="card">
-      <div class="section-head collapse-toggle" id="analyticsToggle" onclick="toggleAnalytics()">
-        <div>
-          <h2><span data-i18n="analytics">Analytics</span> <span class="chevron">▼</span></h2>
-          <div class="meta" style="margin-top:4px" data-i18n="analytics_desc">Click to expand pool charts. Collapsed by default.</div>
+    <div class="tabs" role="tablist" aria-label="Console sections">
+      <button type="button" class="tab active" data-tab="pool" onclick="setTab('pool')" data-i18n="tab_pool">Pool</button>
+      <button type="button" class="tab" data-tab="analytics" onclick="setTab('analytics')" data-i18n="tab_analytics">Analytics</button>
+      <button type="button" class="tab" data-tab="settings" onclick="setTab('settings')" data-i18n="tab_settings">Settings</button>
+    </div>
+
+    <div class="tab-panel active" id="tab-pool">
+      <div class="card">
+        <div class="section-head">
+          <div>
+            <h2 data-i18n="add_keys">Add keys</h2>
+            <div class="meta" style="margin-top:4px" data-i18n="add_keys_desc">One sk-or-... per line, or comma / JSON array.</div>
+          </div>
         </div>
+        <form class="add-form" onsubmit="addKey(); return false;">
+          <textarea id="keyInput" data-i18n-placeholder="key_placeholder" placeholder="sk-or-...&#10;sk-or-..." autocomplete="off" spellcheck="false"></textarea>
+          <div class="row">
+            <input id="noteInput" type="text" data-i18n-placeholder="note_placeholder" placeholder="Note (optional)" autocomplete="off" spellcheck="false" />
+            <button type="submit" data-i18n="add">Add</button>
+          </div>
+        </form>
+        <div class="msg" id="addMsg"></div>
       </div>
-      <div class="collapse-body" id="analyticsBody">
+
+      <div class="card">
+        <div class="section-head">
+          <h2 data-i18n="pool">Pool</h2>
+          <div class="row">
+            <button class="ghost" id="refreshBtn" onclick="loadKeys(false)" data-i18n="refresh">Refresh</button>
+            <button class="soft" id="syncBtn" onclick="syncUsage(false)" data-i18n="sync_usage">Sync usage</button>
+            <button class="ghost" id="forceSyncBtn" onclick="syncUsage(true)" data-i18n="force_sync">Force sync</button>
+          </div>
+        </div>
+        <div class="keys" id="keys"></div>
+        <div class="empty" id="empty" style="display:none" data-i18n="no_keys">No keys yet.</div>
+        <div class="msg" id="listMsg"></div>
+      </div>
+    </div>
+
+    <div class="tab-panel" id="tab-analytics">
+      <div class="card">
+        <div class="section-head">
+          <div>
+            <h2 data-i18n="analytics">Analytics</h2>
+            <div class="meta" style="margin-top:4px" data-i18n="analytics_desc">Pool charts, models/tokens, and call location map.</div>
+          </div>
+        </div>
         <div class="charts">
           <div class="chart-card">
             <h3 data-i18n="chart_credits">Credits · used / remaining</h3>
@@ -263,72 +340,59 @@ const HTML = `<!doctype html>
             <div class="meta" data-i18n="chart_result_desc">ok / quota / 429 / auth / error</div>
             <div class="chart-wrap"><canvas id="chartResult"></canvas></div>
           </div>
+          <div class="chart-card chart-card-wide">
+            <h3 data-i18n="chart_geo">Upstream · call locations</h3>
+            <div class="meta" data-i18n="chart_geo_desc">Client edge country / colo of each key's last call</div>
+            <div id="geoMap" class="geo-map"></div>
+            <div class="geo-legend" id="geoLegend"></div>
+          </div>
           <div class="chart-card">
-            <h3 data-i18n="chart_geo">Upstream · country / colo</h3>
-            <div class="meta" data-i18n="chart_geo_desc">Client edge location of last call</div>
-            <div class="chart-wrap"><canvas id="chartGeo"></canvas></div>
+            <h3 data-i18n="chart_models">Models · calls</h3>
+            <div class="meta" data-i18n="chart_models_desc">Resolved model distribution from responses</div>
+            <div class="chart-wrap"><canvas id="chartModels"></canvas></div>
+          </div>
+          <div class="chart-card">
+            <h3 data-i18n="chart_model_tokens">Models · tokens</h3>
+            <div class="meta" data-i18n="chart_model_tokens_desc">Total tokens consumed per model</div>
+            <div class="chart-wrap"><canvas id="chartModelTokens"></canvas></div>
+          </div>
+          <div class="chart-card">
+            <h3 data-i18n="chart_token_split">Tokens · prompt / completion</h3>
+            <div class="meta" data-i18n="chart_token_split_desc">Aggregate prompt vs completion tokens</div>
+            <div class="chart-wrap"><canvas id="chartTokenSplit"></canvas></div>
           </div>
         </div>
       </div>
     </div>
 
-    <div class="card">
-      <div class="section-head">
-        <div>
-          <h2 data-i18n="load_balancing">Load balancing</h2>
-          <div class="meta" style="margin-top:4px" data-i18n="load_balancing_desc">How healthy keys are chosen for each request.</div>
+    <div class="tab-panel" id="tab-settings">
+      <div class="card">
+        <div class="section-head">
+          <div>
+            <h2 data-i18n="load_balancing">Load balancing</h2>
+            <div class="meta" style="margin-top:4px" data-i18n="load_balancing_desc">How healthy keys are chosen for each request.</div>
+          </div>
+          <button class="soft" id="saveSettingsBtn" onclick="saveSettings()" data-i18n="save_settings">Save settings</button>
         </div>
-        <button class="soft" id="saveSettingsBtn" onclick="saveSettings()" data-i18n="save_settings">Save settings</button>
-      </div>
-      <div class="strategies" id="strategies"></div>
-      <div class="sync-block">
-        <h2 style="font-size:15px;margin:0 0 4px" data-i18n="sync_interval">Credit sync interval</h2>
-        <div class="meta" data-i18n="sync_interval_desc">Minimum age before soft /api/v1/key sync. Pool sync runs one-by-one with gaps.</div>
-        <div class="chips" id="syncIntervalChips"></div>
-      </div>
-      <div class="sync-block">
-        <h2 style="font-size:15px;margin:0 0 4px" data-i18n="failure_costs">Failure controls</h2>
-        <div class="meta" data-i18n="failure_costs_desc">402 parks the key until reset; 429 cools down; repeated 401/5xx deprecate. Admin Enable can revive early after sync.</div>
-        <div class="field-grid">
-          <div class="field"><label data-i18n="max_failures">Max network failures</label><input id="maxFailures" type="number" min="1" max="100" /></div>
-          <div class="field"><label data-i18n="quota_lead">Quota probe lead (sec)</label><input id="quotaLead" type="number" min="0" /></div>
+        <div class="strategies" id="strategies"></div>
+        <div class="sync-block">
+          <h2 style="font-size:15px;margin:0 0 4px" data-i18n="sync_interval">Credit sync interval</h2>
+          <div class="meta" data-i18n="sync_interval_desc">Minimum age before soft /api/v1/key sync. Pool sync runs one-by-one with gaps.</div>
+          <div class="chips" id="syncIntervalChips"></div>
         </div>
-      </div>
-      <div class="toolbar">
-        <button class="ghost" onclick="resetCounters()" data-i18n="reset_counters">Reset request counters</button>
-      </div>
-      <div class="msg" id="settingsMsg"></div>
-    </div>
-
-    <div class="card">
-      <div class="section-head">
-        <div>
-          <h2 data-i18n="add_keys">Add keys</h2>
-          <div class="meta" style="margin-top:4px" data-i18n="add_keys_desc">One sk-or-... per line, or comma / JSON array.</div>
+        <div class="sync-block">
+          <h2 style="font-size:15px;margin:0 0 4px" data-i18n="failure_costs">Failure controls</h2>
+          <div class="meta" data-i18n="failure_costs_desc">402 parks the key until reset; 429 cools down; repeated 401/5xx deprecate. Admin Enable can revive early after sync.</div>
+          <div class="field-grid">
+            <div class="field"><label data-i18n="max_failures">Max network failures</label><input id="maxFailures" type="number" min="1" max="100" /></div>
+            <div class="field"><label data-i18n="quota_lead">Quota probe lead (sec)</label><input id="quotaLead" type="number" min="0" /></div>
+          </div>
         </div>
-      </div>
-      <form class="add-form" onsubmit="addKey(); return false;">
-        <textarea id="keyInput" data-i18n-placeholder="key_placeholder" placeholder="sk-or-...&#10;sk-or-..." autocomplete="off" spellcheck="false"></textarea>
-        <div class="row">
-          <input id="noteInput" type="text" data-i18n-placeholder="note_placeholder" placeholder="Note (optional)" autocomplete="off" spellcheck="false" />
-          <button type="submit" data-i18n="add">Add</button>
+        <div class="toolbar">
+          <button class="ghost" onclick="resetCounters()" data-i18n="reset_counters">Reset request counters</button>
         </div>
-      </form>
-      <div class="msg" id="addMsg"></div>
-    </div>
-
-    <div class="card">
-      <div class="section-head">
-        <h2 data-i18n="pool">Pool</h2>
-        <div class="row">
-          <button class="ghost" id="refreshBtn" onclick="loadKeys(false)" data-i18n="refresh">Refresh</button>
-          <button class="soft" id="syncBtn" onclick="syncUsage(false)" data-i18n="sync_usage">Sync usage</button>
-          <button class="ghost" id="forceSyncBtn" onclick="syncUsage(true)" data-i18n="force_sync">Force sync</button>
-        </div>
+        <div class="msg" id="settingsMsg"></div>
       </div>
-      <div class="keys" id="keys"></div>
-      <div class="empty" id="empty" style="display:none" data-i18n="no_keys">No keys yet.</div>
-      <div class="msg" id="listMsg"></div>
     </div>
   </div>
 </div>
@@ -344,7 +408,8 @@ var I18N = {
     brand: "OpenRouter Proxy", console: "Console", key_pool: "Key pool",
     sign_in: "Sign in", sign_out: "Sign out", password: "Password",
     login_hint: "Sign in with ADMIN_KEY. Stored only in this browser.",
-    analytics: "Analytics", analytics_desc: "Click to expand pool charts. Collapsed by default.",
+    analytics: "Analytics", analytics_desc: "Pool charts, models/tokens, and call location map.",
+    tab_pool: "Pool", tab_analytics: "Analytics", tab_settings: "Settings",
     chart_credits: "Credits · used / remaining", chart_credits_desc: "Aggregate USD across limited keys",
     chart_status: "Upstream · status", chart_status_desc: "Key health distribution",
     chart_fails: "Upstream · failures", chart_fails_desc: "Consecutive network/auth failure buckets",
@@ -352,7 +417,13 @@ var I18N = {
     chart_picks: "Upstream · picks", chart_picks_desc: "Proxy selection count per key",
     chart_endpoint: "Upstream · last endpoint", chart_endpoint_desc: "Last called API path per key",
     chart_result: "Upstream · last result", chart_result_desc: "ok / quota / 429 / auth / error",
-    chart_geo: "Upstream · country / colo", chart_geo_desc: "Client edge location of last call",
+    chart_geo: "Upstream · call locations", chart_geo_desc: "Client edge country / colo of each key's last call",
+    chart_models: "Models · calls", chart_models_desc: "Resolved model distribution from responses",
+    chart_model_tokens: "Models · tokens", chart_model_tokens_desc: "Total tokens consumed per model",
+    chart_token_split: "Tokens · prompt / completion", chart_token_split_desc: "Aggregate prompt vs completion tokens",
+    chart_prompt: "Prompt", chart_completion: "Completion", chart_tokens: "tokens",
+    map_unavailable: "Map library unavailable", map_empty: "No call location data yet",
+    key_singular: "key", key_plural: "keys",
     load_balancing: "Load balancing", load_balancing_desc: "How healthy keys are chosen for each request.",
     save_settings: "Save settings",
     sync_interval: "Credit sync interval",
@@ -367,6 +438,7 @@ var I18N = {
     unavailable: "Unavailable", invalid_credentials: "Invalid credentials", enter_password: "Enter password",
     sign_in_failed: "Sign in failed",
     stat_keys: "Keys", stat_healthy: "Healthy", stat_remaining: "Remaining", stat_requests: "Requests",
+    stat_tokens: "Tokens",
     stat_dep_exh: "dep {d} · exh {e}", stat_ready: "ready", stat_credits: "USD", stat_picks: "proxy picks",
     stat_unlimited: "{n} unlimited",
     strategy_most_remaining_title: "Most remaining",
@@ -394,7 +466,8 @@ var I18N = {
     brand: "OpenRouter Proxy", console: "控制台", key_pool: "Key 池",
     sign_in: "登录", sign_out: "退出", password: "密码",
     login_hint: "使用 ADMIN_KEY 登录，仅保存在本浏览器。",
-    analytics: "统计分析", analytics_desc: "点击展开图表。默认折叠以节省空间。",
+    analytics: "统计分析", analytics_desc: "池图表、模型/Token 与调用位置地图。",
+    tab_pool: "Key 池", tab_analytics: "统计分析", tab_settings: "设置",
     chart_credits: "额度 · 已用 / 剩余", chart_credits_desc: "有限额 Key 的美元额度汇总",
     chart_status: "上游 · 状态", chart_status_desc: "Key 健康状态分布",
     chart_fails: "上游 · 失败", chart_fails_desc: "连续网络/鉴权失败分桶",
@@ -402,7 +475,13 @@ var I18N = {
     chart_picks: "上游 · 选用", chart_picks_desc: "各 Key 被代理选用次数",
     chart_endpoint: "上游 · 最近接口", chart_endpoint_desc: "各 Key 最近调用的 API 路径",
     chart_result: "上游 · 最近结果", chart_result_desc: "成功 / 额度 / 429 / 鉴权 / 错误",
-    chart_geo: "上游 · 国家 / colo", chart_geo_desc: "最近一次调用的客户端边缘位置",
+    chart_geo: "上游 · 调用位置", chart_geo_desc: "各 Key 最近一次调用的客户端边缘国家 / colo",
+    chart_models: "模型 · 调用次数", chart_models_desc: "响应中实际解析到的模型分布",
+    chart_model_tokens: "模型 · Token", chart_model_tokens_desc: "各模型累计消耗的 Token",
+    chart_token_split: "Token · 输入 / 输出", chart_token_split_desc: "Prompt 与 Completion Token 汇总",
+    chart_prompt: "输入", chart_completion: "输出", chart_tokens: "tokens",
+    map_unavailable: "地图组件不可用", map_empty: "暂无调用位置数据",
+    key_singular: "个 Key", key_plural: "个 Key",
     load_balancing: "负载均衡", load_balancing_desc: "健康 Key 的请求调度策略。",
     save_settings: "保存设置",
     sync_interval: "额度同步间隔",
@@ -417,6 +496,7 @@ var I18N = {
     unavailable: "服务不可用", invalid_credentials: "密码错误", enter_password: "请输入密码",
     sign_in_failed: "登录失败",
     stat_keys: "Keys", stat_healthy: "健康", stat_remaining: "剩余", stat_requests: "请求",
+    stat_tokens: "Tokens",
     stat_dep_exh: "废弃 {d} · 耗尽 {e}", stat_ready: "可用", stat_credits: "美元", stat_picks: "代理选用",
     stat_unlimited: "{n} 个无限额",
     strategy_most_remaining_title: "剩余最多",
@@ -447,7 +527,9 @@ var selectedStrategy = "most_remaining";
 var selectedSyncInterval = 86400;
 var syncIntervalPresets = [900, 1800, 3600, 10800, 21600, 43200, 86400];
 var chartInstances = {};
-var analyticsOpen = false;
+var geoMapInstance = null;
+var geoMapLayer = null;
+var currentTab = "pool";
 var currentLang = detectLang();
 
 function detectLang() {
@@ -476,7 +558,7 @@ function applyI18n() {
   renderSyncIntervalChips();
   renderStats(latestKeys || []);
   if ((latestKeys || []).length) renderKeys(latestKeys);
-  if (analyticsOpen) loadStats();
+  if (currentTab === "analytics") loadStats();
 }
 function setLang(lang) {
   if (lang !== "en" && lang !== "zh") return;
@@ -484,22 +566,65 @@ function setLang(lang) {
   localStorage.setItem(LANG_STORAGE, lang);
   applyI18n();
 }
-function toggleAnalytics() {
-  analyticsOpen = !analyticsOpen;
-  var body = document.getElementById("analyticsBody");
-  var head = document.getElementById("analyticsToggle");
-  if (body) body.classList.toggle("open", analyticsOpen);
-  if (head) head.classList.toggle("open", analyticsOpen);
-  if (analyticsOpen) {
+function setTab(tab) {
+  if (tab !== "pool" && tab !== "analytics" && tab !== "settings") return;
+  currentTab = tab;
+  document.querySelectorAll(".tab").forEach(function (btn) {
+    btn.classList.toggle("active", btn.getAttribute("data-tab") === tab);
+  });
+  document.querySelectorAll(".tab-panel").forEach(function (panel) {
+    panel.classList.toggle("active", panel.id === "tab-" + tab);
+  });
+  if (tab === "analytics") {
     loadStats().then(function () {
       setTimeout(function () {
         Object.keys(chartInstances).forEach(function (id) {
           if (chartInstances[id] && chartInstances[id].resize) chartInstances[id].resize();
         });
+        if (geoMapInstance) geoMapInstance.invalidateSize();
       }, 60);
     });
   }
 }
+
+/* Approximate centroids for Cloudflare cf.country (ISO2). */
+var COUNTRY_COORDS = {
+  AD:[42.5,1.5], AE:[23.4,53.8], AF:[33.9,67.7], AL:[41.2,20.2], AM:[40.1,45.0],
+  AR:[-38.4,-63.6], AT:[47.5,14.6], AU:[-25.3,133.8], AZ:[40.1,47.6], BA:[43.9,17.7],
+  BD:[23.7,90.4], BE:[50.5,4.5], BG:[42.7,25.5], BH:[26.0,50.6], BO:[-16.3,-63.6],
+  BR:[-14.2,-51.9], BY:[53.7,27.9], CA:[56.1,-106.3], CH:[46.8,8.2], CL:[-35.7,-71.5],
+  CN:[35.9,104.2], CO:[4.6,-74.3], CR:[9.7,-83.8], CZ:[49.8,15.5], DE:[51.2,10.5],
+  DK:[56.3,9.5], DO:[18.7,-70.2], DZ:[28.0,1.7], EC:[-1.8,-78.2], EE:[58.6,25.0],
+  EG:[26.8,30.8], ES:[40.5,-3.7], ET:[9.1,40.5], FI:[61.9,25.7], FR:[46.2,2.2],
+  GB:[55.4,-3.4], GE:[42.3,43.4], GH:[7.9,-1.0], GR:[39.1,21.8], GT:[15.8,-90.2],
+  HK:[22.3,114.2], HR:[45.1,15.2], HU:[47.2,19.5], ID:[-0.8,113.9], IE:[53.1,-8.2],
+  IL:[31.0,34.9], IN:[20.6,78.9], IQ:[33.2,43.7], IR:[32.4,53.7], IS:[64.9,-19.0],
+  IT:[41.9,12.6], JO:[30.6,36.2], JP:[36.2,138.3], KE:[-0.0,37.9], KH:[12.6,105.0],
+  KR:[35.9,127.8], KW:[29.3,47.5], KZ:[48.0,67.0], LB:[33.9,35.9], LK:[7.9,80.8],
+  LT:[55.2,23.9], LU:[49.8,6.1], LV:[56.9,24.6], MA:[31.8,-7.1], MD:[47.4,28.4],
+  MM:[21.9,95.9], MN:[46.9,103.8], MO:[22.2,113.5], MX:[23.6,-102.6], MY:[4.2,101.9],
+  NG:[9.1,8.7], NL:[52.1,5.3], NO:[60.5,8.5], NP:[28.4,84.1], NZ:[-40.9,174.9],
+  PA:[8.5,-80.8], PE:[-9.2,-75.0], PH:[12.9,121.8], PK:[30.4,69.3], PL:[51.9,19.1],
+  PR:[18.2,-66.6], PT:[39.4,-8.2], PY:[-23.4,-58.4], QA:[25.4,51.2], RO:[45.9,24.9],
+  RS:[44.0,21.0], RU:[61.5,105.3], SA:[23.9,45.1], SE:[60.1,18.6], SG:[1.4,103.8],
+  SI:[46.2,14.9], SK:[48.7,19.7], TH:[15.9,100.9], TN:[33.9,9.5], TR:[38.9,35.2],
+  TW:[23.7,120.9], UA:[48.4,31.2], US:[39.8,-98.6], UY:[-32.5,-55.8], UZ:[41.4,64.6],
+  VE:[6.4,-66.6], VN:[14.1,108.3], ZA:[-30.6,22.9]
+};
+
+/* Common Cloudflare colo airport approximations. */
+var COLO_COORDS = {
+  AMS:[52.31,4.77], ARN:[59.65,17.92], ATL:[33.64,-84.43], AKL:[-37.01,174.79],
+  BOM:[19.09,72.87], BUD:[47.44,19.26], CDG:[49.01,2.55], DEN:[39.86,-104.67],
+  DFW:[32.90,-97.04], DXB:[25.25,55.36], EWR:[40.69,-74.17], FRA:[50.04,8.56],
+  GRU:[-23.43,-46.47], HKG:[22.31,113.91], IAD:[38.95,-77.46], ICN:[37.46,126.44],
+  JNB:[-26.14,28.25], KIX:[34.43,135.24], LAX:[33.94,-118.41], LHR:[51.47,-0.46],
+  LIS:[38.77,-9.13], MAD:[40.47,-3.56], MEL:[-37.67,144.84], MIA:[25.80,-80.29],
+  MRS:[43.44,5.21], MXP:[45.63,8.72], NRT:[35.77,140.39], ORD:[41.97,-87.91],
+  ORY:[48.73,2.37], PER:[-31.94,115.97], SCL:[-33.39,-70.79], SEA:[47.45,-122.31],
+  SIN:[1.36,103.99], SJC:[37.36,-121.93], SYD:[-33.95,151.18], VIE:[48.11,16.57],
+  WAW:[52.17,20.97], ZRH:[47.46,8.55]
+};
 
 function formatInterval(secs) {
   if (secs < 3600) return Math.round(secs / 60) + "m";
@@ -635,11 +760,13 @@ function renderStats(keys) {
   var deprecated = keys.filter(function (k) { return k.status === "deprecated"; }).length;
   var exhausted = keys.filter(function (k) { return k.status === "exhausted"; }).length;
   var unlimited = keys.filter(function (k) { return !(Number(k.creditLimit) > 0); }).length;
+  var tokens = keys.reduce(function (sum, k) { return sum + (Number(k.totalTokensTotal) || 0); }, 0);
   document.getElementById("stats").innerHTML =
     '<div class="stat"><div class="k">' + t("stat_keys") + '</div><div class="v">' + total + '</div><div class="h">' + t("stat_dep_exh", { d: deprecated, e: exhausted }) + '</div></div>' +
     '<div class="stat"><div class="k">' + t("stat_healthy") + '</div><div class="v">' + active + '</div><div class="h">' + t("stat_ready") + '</div></div>' +
     '<div class="stat"><div class="k">' + t("stat_remaining") + '</div><div class="v">' + money(remaining) + '</div><div class="h">' + t("stat_unlimited", { n: unlimited }) + '</div></div>' +
-    '<div class="stat"><div class="k">' + t("stat_requests") + '</div><div class="v">' + requests + '</div><div class="h">' + t("stat_picks") + '</div></div>';
+    '<div class="stat"><div class="k">' + t("stat_requests") + '</div><div class="v">' + requests + '</div><div class="h">' + t("stat_picks") + '</div></div>' +
+    '<div class="stat"><div class="k">' + t("stat_tokens") + '</div><div class="v">' + tokens + '</div><div class="h">' + t("chart_tokens") + '</div></div>';
 }
 
 function destroyChart(id) {
@@ -732,15 +859,156 @@ function renderCharts(stats) {
     rs.labels.length ? rs.labels : [t("none")],
     rs.values.length ? rs.values : [0]
   ));
-  var geo = mapToLabelsValues(up.lastCountry || up.countries);
-  if (!geo.labels.length) geo = mapToLabelsValues(up.lastColo);
-  upsertChart("chartGeo", doughnutConfig(
-    geo.labels.length ? geo.labels : [t("none")],
-    geo.values.length ? geo.values : [0]
+  renderGeoMap(up.lastCountry || up.countries || {}, up.lastColo || {});
+  var modelCalls = mapToLabelsValues(up.models || up.lastModel);
+  upsertChart("chartModels", doughnutConfig(
+    modelCalls.labels.length ? modelCalls.labels : [t("none")],
+    modelCalls.values.length ? modelCalls.values : [0]
+  ));
+  var mt = mapToLabelsValues(up.modelTokens);
+  if (!mt.labels.length && (up.byModel || []).length) {
+    mt = {
+      labels: up.byModel.map(function (m) { return m.model; }),
+      values: up.byModel.map(function (m) { return m.totalTokens || 0; })
+    };
+  }
+  upsertChart("chartModelTokens", barConfig(
+    mt.labels.length ? mt.labels : [t("none")],
+    mt.values.length ? mt.values : [0],
+    t("chart_tokens"), true
+  ));
+  var split = up.tokenSplit || {};
+  upsertChart("chartTokenSplit", doughnutConfig(
+    [t("chart_prompt"), t("chart_completion")],
+    [split.prompt || ext.promptTokens || 0, split.completion || ext.completionTokens || 0]
   ));
 }
+
+function buildGeoPoints(countryCounts, coloCounts) {
+  var points = [];
+  Object.keys(coloCounts || {}).forEach(function (code) {
+    var c = COLO_COORDS[String(code).toUpperCase()];
+    if (!c) return;
+    points.push({
+      kind: "colo",
+      label: String(code).toUpperCase(),
+      count: coloCounts[code] || 0,
+      lat: c[0],
+      lng: c[1]
+    });
+  });
+  if (points.length) return points;
+  Object.keys(countryCounts || {}).forEach(function (code) {
+    var c = COUNTRY_COORDS[String(code).toUpperCase()];
+    if (!c) return;
+    points.push({
+      kind: "country",
+      label: String(code).toUpperCase(),
+      count: countryCounts[code] || 0,
+      lat: c[0],
+      lng: c[1]
+    });
+  });
+  return points;
+}
+
+function destroyGeoMap() {
+  if (geoMapInstance) {
+    geoMapInstance.remove();
+    geoMapInstance = null;
+    geoMapLayer = null;
+  }
+}
+
+function renderGeoMap(countryCounts, coloCounts) {
+  var host = document.getElementById("geoMap");
+  var legend = document.getElementById("geoLegend");
+  if (!host) return;
+
+  var points = buildGeoPoints(countryCounts, coloCounts).filter(function (p) {
+    return p.count > 0;
+  });
+
+  if (typeof L === "undefined") {
+    destroyGeoMap();
+    host.className = "geo-empty";
+    host.textContent = t("map_unavailable");
+    if (legend) legend.innerHTML = "";
+    return;
+  }
+
+  if (!points.length) {
+    destroyGeoMap();
+    host.className = "geo-empty";
+    host.textContent = t("map_empty");
+    if (legend) legend.innerHTML = "";
+    return;
+  }
+
+  host.className = "geo-map";
+
+  if (!geoMapInstance) {
+    host.innerHTML = "";
+    geoMapInstance = L.map(host, {
+      zoomControl: true,
+      attributionControl: true,
+      worldCopyJump: true
+    }).setView([20, 10], 2);
+    L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+      maxZoom: 6,
+      attribution: "&copy; OpenStreetMap"
+    }).addTo(geoMapInstance);
+  } else if (geoMapLayer) {
+    geoMapInstance.removeLayer(geoMapLayer);
+  }
+
+  geoMapLayer = L.layerGroup();
+  var bounds = [];
+  var maxCount = 1;
+  points.forEach(function (p) {
+    if (p.count > maxCount) maxCount = p.count;
+  });
+
+  points.forEach(function (p, idx) {
+    var color = CHART_COLORS[idx % CHART_COLORS.length];
+    var radius = 8 + Math.round((p.count / maxCount) * 14);
+    var marker = L.circleMarker([p.lat, p.lng], {
+      radius: radius,
+      color: "#fff",
+      weight: 2,
+      fillColor: color,
+      fillOpacity: 0.85
+    });
+    marker.bindPopup(
+      "<strong>" + escapeHtml(p.label) + "</strong><br/>" +
+      escapeHtml(p.kind) + " · " + p.count + " " +
+      (p.count === 1 ? t("key_singular") : t("key_plural"))
+    );
+    marker.addTo(geoMapLayer);
+    bounds.push([p.lat, p.lng]);
+  });
+  geoMapLayer.addTo(geoMapInstance);
+
+  if (bounds.length === 1) {
+    geoMapInstance.setView(bounds[0], 4);
+  } else {
+    geoMapInstance.fitBounds(bounds, { padding: [36, 36], maxZoom: 5 });
+  }
+  setTimeout(function () {
+    if (geoMapInstance) geoMapInstance.invalidateSize();
+  }, 40);
+
+  if (legend) {
+    legend.innerHTML = points.map(function (p, idx) {
+      var color = CHART_COLORS[idx % CHART_COLORS.length];
+      return "<span><i style='background:" + color + "'></i>" +
+        escapeHtml(p.label) + " · " + p.count + "</span>";
+    }).join("");
+  }
+}
+
 function loadStats() {
-  if (!analyticsOpen) return Promise.resolve();
+  if (currentTab !== "analytics") return Promise.resolve();
   return api("/api/stats").then(handle).then(function (data) { renderCharts(data.stats); }).catch(function () {});
 }
 
@@ -794,7 +1062,7 @@ function applySettings(settings, presets) {
 function renderKeys(keys) {
   latestKeys = keys || [];
   renderStats(latestKeys);
-  if (analyticsOpen) loadStats();
+  if (currentTab === "analytics") loadStats();
   var root = document.getElementById("keys");
   var empty = document.getElementById("empty");
   if (!root || !empty) return;
@@ -824,6 +1092,9 @@ function renderKeys(keys) {
         '<div class="meta">' + t("last_call") + " " + timeAgo(k.lastCallAt) +
         (k.lastCallEndpoint ? " · " + escapeHtml(k.lastCallEndpoint) : "") +
         (k.lastCallStatus ? " · " + escapeHtml(k.lastCallStatus) : "") +
+        (k.lastModel ? " · " + escapeHtml(k.lastModel) : "") +
+        (k.lastTotalTokens ? " · " + (k.lastPromptTokens || 0) + "+" + (k.lastCompletionTokens || 0) + " tok" : "") +
+        (k.totalTokensTotal ? " · Σ " + k.totalTokensTotal + " tok" : "") +
         (k.lastClientIp ? " · ip " + escapeHtml(k.lastClientIp) : "") +
         (k.lastColo ? " · colo " + escapeHtml(k.lastColo) : "") +
         (k.lastCountry ? " · " + escapeHtml(k.lastCountry) : "") +

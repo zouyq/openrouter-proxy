@@ -15,11 +15,21 @@ export interface KeyInfo {
   creditRemaining: number; limitReset: string; requestCount: number; consecutiveNetworkFailures: number;
   cooldownUntil: number; quotaResetAt: number; lastUsedAt: number; creditSyncedAt: number;
   lastError: string; lastErrorType: string; lastSyncError: string; planName: string; label: string;
-  addedAt: number; statusChangedAt: number; deprecatedAt: number; lastCallAt: number;
+  addedAt: number; statusChangedAt: number; deprecatedAt: number;   lastCallAt: number;
   lastCallEndpoint: string; lastCallStatus: string; lastClientIp: string; lastColo: string;
   lastCountry: string; lastUserAgent: string;
+  lastModel: string; lastPromptTokens: number; lastCompletionTokens: number; lastTotalTokens: number;
+  promptTokensTotal: number; completionTokensTotal: number; totalTokensTotal: number;
 }
 export type KeyCallMeta = { endpoint: string; status: string; clientIp?: string; colo?: string; country?: string; userAgent?: string };
+export type ModelUsageRecord = {
+  model?: string;
+  requestedModel?: string;
+  promptTokens?: number;
+  completionTokens?: number;
+  totalTokens?: number;
+  cost?: number | null;
+};
 export type SyncUsageOptions = { force?: boolean; minAgeSecs?: number; allowReviveExhausted?: boolean };
 type KeyRow = Record<string, unknown>;
 const now = () => Math.floor(Date.now() / 1000);
@@ -45,6 +55,9 @@ function toKey(r: KeyRow): KeyInfo {
     label: text(r.label), addedAt: num(r.added_at), statusChangedAt: num(r.status_changed_at), deprecatedAt: num(r.deprecated_at),
     lastCallAt: num(r.last_call_at), lastCallEndpoint: text(r.last_call_endpoint), lastCallStatus: text(r.last_call_status),
     lastClientIp: text(r.last_client_ip), lastColo: text(r.last_colo), lastCountry: text(r.last_country), lastUserAgent: text(r.last_user_agent),
+    lastModel: text(r.last_model), lastPromptTokens: num(r.last_prompt_tokens), lastCompletionTokens: num(r.last_completion_tokens),
+    lastTotalTokens: num(r.last_total_tokens), promptTokensTotal: num(r.prompt_tokens_total),
+    completionTokensTotal: num(r.completion_tokens_total), totalTokensTotal: num(r.total_tokens_total),
   };
 }
 async function row(db: D1Database, key: string) { return db.prepare("SELECT * FROM keys WHERE api_key=?").bind(key).first<KeyRow>(); }
@@ -122,6 +135,34 @@ export async function recordSuccess(db:D1Database,key:string,cost:number|null) {
   const saved=await row(db,key); return saved?toKey(saved):null;
 }
 export async function recordKeyCall(db:D1Database,key:string,m:KeyCallMeta) { await db.prepare("UPDATE keys SET last_call_at=?,last_call_endpoint=?,last_call_status=?,last_client_ip=?,last_colo=?,last_country=?,last_user_agent=? WHERE api_key=?").bind(now(),m.endpoint.slice(0,120),m.status.slice(0,40),(m.clientIp||"").slice(0,80),(m.colo||"").slice(0,16),(m.country||"").slice(0,8),(m.userAgent||"").slice(0,200),key).run(); }
+/** Persist resolved model + token/cost aggregates for analytics. */
+export async function recordModelUsage(db: D1Database, key: string, usage: ModelUsageRecord) {
+  const requested = (usage.requestedModel || "").trim().slice(0, 160);
+  const model = (usage.model || requested || "unknown").trim().slice(0, 160) || "unknown";
+  const promptTokens = Math.max(0, Math.floor(Number(usage.promptTokens) || 0));
+  const completionTokens = Math.max(0, Math.floor(Number(usage.completionTokens) || 0));
+  let totalTokens = Math.max(0, Math.floor(Number(usage.totalTokens) || 0));
+  if (!totalTokens) totalTokens = promptTokens + completionTokens;
+  const cost = Math.max(0, Number(usage.cost) || 0);
+  const t = now();
+  await db.prepare(
+    `INSERT INTO model_usage(model,requested_model,calls,prompt_tokens,completion_tokens,total_tokens,cost_usd,last_used_at)
+     VALUES(?,?,1,?,?,?,?,?)
+     ON CONFLICT(model) DO UPDATE SET
+       requested_model=CASE WHEN excluded.requested_model!='' THEN excluded.requested_model ELSE model_usage.requested_model END,
+       calls=model_usage.calls+1,
+       prompt_tokens=model_usage.prompt_tokens+excluded.prompt_tokens,
+       completion_tokens=model_usage.completion_tokens+excluded.completion_tokens,
+       total_tokens=model_usage.total_tokens+excluded.total_tokens,
+       cost_usd=model_usage.cost_usd+excluded.cost_usd,
+       last_used_at=excluded.last_used_at`
+  ).bind(model, requested, promptTokens, completionTokens, totalTokens, cost, t).run();
+  await db.prepare(
+    `UPDATE keys SET last_model=?,last_prompt_tokens=?,last_completion_tokens=?,last_total_tokens=?,
+     prompt_tokens_total=prompt_tokens_total+?,completion_tokens_total=completion_tokens_total+?,total_tokens_total=total_tokens_total+?
+     WHERE api_key=?`
+  ).bind(model, promptTokens, completionTokens, totalTokens, promptTokens, completionTokens, totalTokens, key).run();
+}
 async function saveSnapshot(db:D1Database,key:string,s:KeySnapshot,allowRevive=false) {
   const old=await row(db,key); if(!old) throw new Error("Key not found"); const k=toKey(old), f=fields(s),t=now(), locked=k.status==="exhausted"&&k.quotaResetAt>t&&!allowRevive;
   const status=locked?"exhausted":f.exhausted?"exhausted":k.status==="deprecated"&&!allowRevive?"deprecated":"active";
@@ -177,17 +218,24 @@ export function buildPoolStats(keys: KeyInfo[]) {
   const lastResult: Record<string, number> = {};
   const lastCountry: Record<string, number> = {};
   const lastColo: Record<string, number> = {};
+  const lastModel: Record<string, number> = {};
   let creditLimit = 0;
   let creditUsage = 0;
   let creditRemaining = 0;
   let requestCount = 0;
   let unlimitedKeys = 0;
+  let promptTokens = 0;
+  let completionTokens = 0;
+  let totalTokens = 0;
 
   for (const k of keys) {
     creditLimit += k.creditLimit || 0;
     creditUsage += k.creditUsage || 0;
     creditRemaining += k.creditRemaining || 0;
     requestCount += k.requestCount || 0;
+    promptTokens += k.promptTokensTotal || 0;
+    completionTokens += k.completionTokensTotal || 0;
+    totalTokens += k.totalTokensTotal || 0;
     if ((k.creditLimit || 0) <= 0) unlimitedKeys += 1;
 
     if (k.status === "deprecated") status.deprecated += 1;
@@ -204,6 +252,7 @@ export function buildPoolStats(keys: KeyInfo[]) {
     bump(lastResult, normalizeResult(k.lastCallStatus));
     bump(lastCountry, k.lastCountry);
     bump(lastColo, k.lastColo);
+    bump(lastModel, k.lastModel);
   }
 
   return {
@@ -215,6 +264,11 @@ export function buildPoolStats(keys: KeyInfo[]) {
       creditUsage,
       creditRemaining,
       requestCount,
+      promptTokens,
+      completionTokens,
+      totalTokens,
+      modelCalls: 0,
+      modelCost: 0,
     },
     upstream: {
       status,
@@ -226,6 +280,8 @@ export function buildPoolStats(keys: KeyInfo[]) {
           remaining: k.creditRemaining,
           usage: k.creditUsage,
           picks: k.requestCount,
+          tokens: k.totalTokensTotal,
+          lastModel: k.lastModel,
           status: k.status === "active" && k.cooldownUntil > t ? "cooling" : k.status,
         }))
         .sort((a, b) => b.remaining - a.remaining),
@@ -233,11 +289,92 @@ export function buildPoolStats(keys: KeyInfo[]) {
       lastResult,
       lastCountry,
       lastColo,
+      lastModel,
       countries: lastCountry,
+      models: {} as Record<string, number>,
+      modelTokens: {} as Record<string, number>,
+      tokenSplit: { prompt: promptTokens, completion: completionTokens },
+      byModel: [] as Array<{
+        model: string;
+        requestedModel: string;
+        calls: number;
+        promptTokens: number;
+        completionTokens: number;
+        totalTokens: number;
+        costUsd: number;
+      }>,
     },
   };
 }
 
+type ModelUsageRow = {
+  model: string;
+  requested_model: string;
+  calls: number;
+  prompt_tokens: number;
+  completion_tokens: number;
+  total_tokens: number;
+  cost_usd: number;
+};
+
 export async function getPoolStats(db: D1Database) {
-  return buildPoolStats(await listKeys(db));
+  const keys = await listKeys(db);
+  const stats = buildPoolStats(keys);
+  let rows: ModelUsageRow[] = [];
+  try {
+    const result = await db
+      .prepare(
+        `SELECT model,requested_model,calls,prompt_tokens,completion_tokens,total_tokens,cost_usd
+         FROM model_usage ORDER BY total_tokens DESC, calls DESC LIMIT 40`
+      )
+      .all<ModelUsageRow>();
+    rows = result.results ?? [];
+  } catch {
+    rows = [];
+  }
+
+  const models: Record<string, number> = {};
+  const modelTokens: Record<string, number> = {};
+  let promptTokens = 0;
+  let completionTokens = 0;
+  let totalTokens = 0;
+  let modelCalls = 0;
+  let modelCost = 0;
+  const byModel = rows.map((r) => {
+    const model = text(r.model) || "unknown";
+    const calls = num(r.calls);
+    const pt = num(r.prompt_tokens);
+    const ct = num(r.completion_tokens);
+    const tt = num(r.total_tokens) || pt + ct;
+    const cost = num(r.cost_usd);
+    models[model] = calls;
+    modelTokens[model] = tt;
+    promptTokens += pt;
+    completionTokens += ct;
+    totalTokens += tt;
+    modelCalls += calls;
+    modelCost += cost;
+    return {
+      model,
+      requestedModel: text(r.requested_model),
+      calls,
+      promptTokens: pt,
+      completionTokens: ct,
+      totalTokens: tt,
+      costUsd: cost,
+    };
+  });
+
+  if (rows.length) {
+    stats.external.promptTokens = promptTokens;
+    stats.external.completionTokens = completionTokens;
+    stats.external.totalTokens = totalTokens;
+    stats.upstream.tokenSplit = { prompt: promptTokens, completion: completionTokens };
+  }
+  stats.upstream.models = models;
+  stats.upstream.modelTokens = modelTokens;
+  stats.upstream.byModel = byModel;
+  stats.external.modelCalls = modelCalls;
+  stats.external.modelCost = modelCost;
+  return stats;
 }
