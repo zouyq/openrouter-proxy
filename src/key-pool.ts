@@ -146,5 +146,98 @@ export const probeDeprecatedKeys=(db:D1Database)=>probe(db,"deprecated");
 export const probeExhaustedKeys=(db:D1Database)=>probe(db,"exhausted");
 export async function resetRequestCounts(db:D1Database) { const r=await db.prepare("UPDATE keys SET request_count=0").run(); await setPoolConfig(db,{rrIndex:0}); return r.meta.changes??0; }
 export async function hasStaleUsage(db:D1Database) { const [keys,c]=await Promise.all([listKeys(db),getPoolConfig(db)]); return keys.some(k=>k.status==="active"&&(!k.creditSyncedAt||now()-k.creditSyncedAt>c.usageSyncIntervalSecs)); }
-export function buildPoolStats(keys:KeyInfo[]) { const status:{[x:string]:number}={active:0,cooling:0,exhausted:0,deprecated:0}, failures:Record<string,number>={"0":0,"1-2":0,"3+":0},lastEndpoint:Record<string,number>={},lastResult:Record<string,number>={},countries:Record<string,number>={}; let limit=0,usage=0,remaining=0,picks=0; for(const k of keys){limit+=k.creditLimit;usage+=k.creditUsage;remaining+=k.creditRemaining;picks+=k.requestCount;status[k.status==="active"&&k.cooldownUntil>now()?"cooling":k.status]++;failures[k.consecutiveNetworkFailures===0?"0":k.consecutiveNetworkFailures<3?"1-2":"3+"]++;for(const [map,v] of [[lastEndpoint,k.lastCallEndpoint],[lastResult,k.lastCallStatus],[countries,k.lastCountry]] as const)if(v)map[v]=(map[v]||0)+1;}return {external:{keyCount:keys.length,healthy:status.active,creditLimit:limit,creditUsage:usage,creditRemaining:remaining,requestCount:picks},upstream:{status,failures,byKey:keys.map(k=>({mask:k.mask,remaining:k.creditRemaining,usage:k.creditUsage,picks:k.requestCount})).sort((a,b)=>b.remaining-a.remaining),lastEndpoint,lastResult,countries}}; }
-export async function getPoolStats(db:D1Database) { return buildPoolStats(await listKeys(db)); }
+function bump(map: Record<string, number>, key: string) {
+  if (!key) return;
+  map[key] = (map[key] || 0) + 1;
+}
+
+function normalizeResult(raw: string): string {
+  const s = String(raw || "").trim().toLowerCase();
+  if (!s) return "";
+  if (s === "ok" || s === "200" || s === "201" || s === "202") return "ok";
+  if (s === "429" || s === "rate_limit") return "429";
+  if (s === "402" || s === "432" || s === "quota" || s === "quota_exhausted") return "quota";
+  if (s === "401" || s === "403" || s === "auth") return "auth";
+  if (s === "network_error" || s === "error" || /^5\d\d$/.test(s)) return "error";
+  return s.slice(0, 24);
+}
+
+function shortEndpoint(raw: string): string {
+  const s = String(raw || "").trim();
+  if (!s) return "";
+  // /api/v1/chat/completions -> chat/completions
+  return s.replace(/^\/api\/v1\//, "").replace(/^\/v1\//, "").slice(0, 48);
+}
+
+export function buildPoolStats(keys: KeyInfo[]) {
+  const t = now();
+  const status: Record<string, number> = { active: 0, cooling: 0, exhausted: 0, deprecated: 0 };
+  const failureBuckets: Record<string, number> = { "0": 0, "1-2": 0, "3+": 0 };
+  const lastEndpoint: Record<string, number> = {};
+  const lastResult: Record<string, number> = {};
+  const lastCountry: Record<string, number> = {};
+  const lastColo: Record<string, number> = {};
+  let creditLimit = 0;
+  let creditUsage = 0;
+  let creditRemaining = 0;
+  let requestCount = 0;
+  let unlimitedKeys = 0;
+
+  for (const k of keys) {
+    creditLimit += k.creditLimit || 0;
+    creditUsage += k.creditUsage || 0;
+    creditRemaining += k.creditRemaining || 0;
+    requestCount += k.requestCount || 0;
+    if ((k.creditLimit || 0) <= 0) unlimitedKeys += 1;
+
+    if (k.status === "deprecated") status.deprecated += 1;
+    else if (k.status === "exhausted") status.exhausted += 1;
+    else if (k.status === "active" && k.cooldownUntil > t) status.cooling += 1;
+    else status.active += 1;
+
+    const fails = k.consecutiveNetworkFailures || 0;
+    if (fails <= 0) failureBuckets["0"] += 1;
+    else if (fails <= 2) failureBuckets["1-2"] += 1;
+    else failureBuckets["3+"] += 1;
+
+    bump(lastEndpoint, shortEndpoint(k.lastCallEndpoint));
+    bump(lastResult, normalizeResult(k.lastCallStatus));
+    bump(lastCountry, k.lastCountry);
+    bump(lastColo, k.lastColo);
+  }
+
+  return {
+    external: {
+      keyCount: keys.length,
+      healthy: status.active,
+      unlimitedKeys,
+      creditLimit,
+      creditUsage,
+      creditRemaining,
+      requestCount,
+    },
+    upstream: {
+      status,
+      failureBuckets,
+      failures: failureBuckets,
+      byKey: keys
+        .map((k) => ({
+          mask: k.mask,
+          remaining: k.creditRemaining,
+          usage: k.creditUsage,
+          picks: k.requestCount,
+          status: k.status === "active" && k.cooldownUntil > t ? "cooling" : k.status,
+        }))
+        .sort((a, b) => b.remaining - a.remaining),
+      lastEndpoint,
+      lastResult,
+      lastCountry,
+      lastColo,
+      countries: lastCountry,
+    },
+  };
+}
+
+export async function getPoolStats(db: D1Database) {
+  return buildPoolStats(await listKeys(db));
+}

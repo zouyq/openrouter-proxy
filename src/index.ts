@@ -72,18 +72,65 @@ app.delete("/api/keys", async c => {
   try { const { apiKey } = await c.req.json<{apiKey?:string}>(); if (!apiKey) return c.json({error:"Missing apiKey"},400); await deleteKey(c.env.DB, apiKey); return c.json({success:true}); }
   catch(e) { return c.json({error:String(e)},500); }
 });
-app.post("/api/keys/sync", async c => {
-  try { const body: { apiKey?: string; force?: boolean } = await c.req.json<{apiKey?:string;force?:boolean}>().catch(() => ({})); const result = body.apiKey ? await syncKeyUsage(c.env.DB, body.apiKey, {force:body.force}) : await syncAllUsage(c.env.DB,{force:body.force}); return c.json({success:true,result,keys:await listKeys(c.env.DB)}); }
-  catch(e) { return c.json({error:String(e)},500); }
+app.post("/api/keys/sync", async (c) => {
+  try {
+    const body: { apiKey?: string; force?: boolean } = await c.req.json<{ apiKey?: string; force?: boolean }>().catch(() => ({}));
+    if (body.apiKey) {
+      const key = await syncKeyUsage(c.env.DB, body.apiKey, { force: body.force });
+      return c.json({
+        success: true,
+        synced: key.skipped ? 0 : 1,
+        skipped: key.skipped ? 1 : 0,
+        key,
+        keys: await listKeys(c.env.DB),
+        settings: await getPoolConfig(c.env.DB),
+      });
+    }
+    const result = await syncAllUsage(c.env.DB, { force: body.force });
+    return c.json({
+      success: true,
+      ...result,
+      keys: await listKeys(c.env.DB),
+      settings: await getPoolConfig(c.env.DB),
+    });
+  } catch (e) {
+    return c.json({ error: e instanceof Error ? e.message : String(e) }, 500);
+  }
 });
-app.post("/api/keys/reactivate", async c => {
-  try { const {apiKey}=await c.req.json<{apiKey?:string}>(); if(!apiKey)return c.json({error:"Missing apiKey"},400); return c.json({success:true,key:await reactivateKey(c.env.DB,apiKey)}); }
-  catch(e) { return c.json({error:String(e)},500); }
+app.post("/api/keys/reactivate", async (c) => {
+  try {
+    const { apiKey } = await c.req.json<{ apiKey?: string }>();
+    if (!apiKey) return c.json({ error: "Missing apiKey" }, 400);
+    const key = await reactivateKey(c.env.DB, apiKey);
+    return c.json({ success: true, key, keys: await listKeys(c.env.DB) });
+  } catch (e) {
+    return c.json({ error: e instanceof Error ? e.message : String(e) }, 500);
+  }
 });
-app.get("/api/settings", async c => c.json({settings:await getPoolConfig(c.env.DB),strategies:LOAD_BALANCE_STRATEGIES,usageSyncIntervalPresets:USAGE_SYNC_INTERVAL_PRESETS}));
-app.put("/api/settings", async c => {
-  try { const body=await c.req.json<Partial<PoolConfig>&{resetCounters?:boolean}>(); if(body.strategy&&!LOAD_BALANCE_STRATEGIES.includes(body.strategy as LoadBalanceStrategy))return c.json({error:"Invalid strategy"},400); const settings=await setPoolConfig(c.env.DB,body); if(body.resetCounters)await resetRequestCounts(c.env.DB); return c.json({success:true,settings}); }
-  catch(e) { return c.json({error:String(e)},500); }
+app.get("/api/settings", async (c) =>
+  c.json({
+    settings: await getPoolConfig(c.env.DB),
+    strategies: LOAD_BALANCE_STRATEGIES,
+    usageSyncIntervalPresets: USAGE_SYNC_INTERVAL_PRESETS,
+  })
+);
+app.put("/api/settings", async (c) => {
+  try {
+    const body = await c.req.json<Partial<PoolConfig> & { resetCounters?: boolean }>();
+    if (body.strategy && !LOAD_BALANCE_STRATEGIES.includes(body.strategy as LoadBalanceStrategy)) {
+      return c.json({ error: "Invalid strategy" }, 400);
+    }
+    const settings = await setPoolConfig(c.env.DB, body);
+    if (body.resetCounters) await resetRequestCounts(c.env.DB);
+    return c.json({
+      success: true,
+      settings,
+      keys: await listKeys(c.env.DB),
+      usageSyncIntervalPresets: USAGE_SYNC_INTERVAL_PRESETS,
+    });
+  } catch (e) {
+    return c.json({ error: e instanceof Error ? e.message : String(e) }, 500);
+  }
 });
 app.get("/api/stats", async c => c.json({stats:await getPoolStats(c.env.DB)}));
 
