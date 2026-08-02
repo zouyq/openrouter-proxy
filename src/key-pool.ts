@@ -95,8 +95,8 @@ export function isQuotaExhaustedError(statusOrText: number|string, detail="") {
   return statusOrText===402 || /\b402\b|insufficient.{0,20}(credit|fund)|credit.{0,20}(exhaust|limit)|quota.{0,20}(exceed|limit)|out of credits/.test(value);
 }
 export async function isKeySelectable(db:D1Database,key:string) { const r=await row(db,key); if(!r) return false; const k=toKey(r); return k.status==="active" && k.cooldownUntil<=now() && (k.creditRemaining>0 || k.creditLimit===0); }
-export async function pickBestKey(db: D1Database): Promise<string|null> {
-  const candidates=(await listKeys(db)).filter(k=>k.status==="active"&&k.cooldownUntil<=now()&&(k.creditRemaining>0||k.creditLimit===0));
+export async function pickBestKey(db: D1Database, exclude: Set<string> = new Set()): Promise<string|null> {
+  const candidates=(await listKeys(db)).filter(k=>!exclude.has(k.apiKey)&&k.status==="active"&&k.cooldownUntil<=now()&&(k.creditRemaining>0||k.creditLimit===0));
   if(!candidates.length) return null; const clean=candidates.filter(k=>k.consecutiveNetworkFailures===0); const pool=clean.length?clean:candidates; const c=await getPoolConfig(db);
   let selected=pool[0];
   if(c.strategy==="round_robin") selected=pool[c.rrIndex%pool.length];

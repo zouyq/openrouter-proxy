@@ -2,6 +2,8 @@
 
 部署在 Cloudflare Workers 上的 OpenAI 兼容 OpenRouter 代理。它在 D1 中管理多个 `sk-or-...` 密钥，按策略负载均衡并提供管理控制台。
 
+示例部署：`https://openrouter-proxy.zyqcf.workers.dev`
+
 [English](README.md)
 
 ## 功能

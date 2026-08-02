@@ -126,8 +126,8 @@ async function handleProxy(c: Context<{ Bindings: Env }>) {
   const tried = new Set<string>();
   const callMeta = meta(request);
   while (true) {
-    const apiKey = await pickBestKey(c.env.DB);
-    if (!apiKey || tried.has(apiKey)) {
+    const apiKey = await pickBestKey(c.env.DB, tried);
+    if (!apiKey) {
       return c.json(jsonError("No available OpenRouter keys in the pool", 503), 503);
     }
     tried.add(apiKey);

@@ -2,6 +2,8 @@
 
 An OpenAI-compatible [OpenRouter](https://openrouter.ai) proxy for Cloudflare Workers. It keeps a D1 pool of `sk-or-...` keys, balances requests, records USD usage, and provides a small admin console.
 
+Example deployment: `https://openrouter-proxy.zyqcf.workers.dev`
+
 [中文文档](README.zh-CN.md)
 
 ## Features
