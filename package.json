@@ -1,0 +1,25 @@
+{
+  "name": "openrouter-proxy",
+  "version": "1.0.0",
+  "description": "OpenAI-compatible OpenRouter proxy on Cloudflare Workers with a D1 multi-key pool",
+  "type": "module",
+  "author": "zouyq",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/zouyq/openrouter-proxy"
+  },
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "build": "tsc --noEmit"
+  },
+  "dependencies": {
+    "hono": "^4.12.3"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^5.20260801.1",
+    "typescript": "^5.9.3",
+    "wrangler": "^4.69.0"
+  }
+}

@@ -1,0 +1,23 @@
+name = "openrouter-proxy"
+main = "src/index.ts"
+compatibility_date = "2025-01-01"
+compatibility_flags = ["nodejs_compat"]
+
+[[d1_databases]]
+binding = "DB"
+database_name = "openrouter-proxy-db"
+database_id = "c53e9d56-27ae-472e-8997-cfa6158ab1e1"
+migrations_dir = "migrations"
+
+# Secrets (never commit real values):
+#   npx wrangler secret put API_TOKEN   # client proxy token
+#   npx wrangler secret put ADMIN_KEY   # admin console token
+# AUTH_KEY is supported only as a legacy fallback for both.
+
+[triggers]
+crons = ["0 * * * *"]
+
+[observability]
+[observability.logs]
+enabled = true
+invocation_logs = true
